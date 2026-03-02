@@ -7,11 +7,11 @@ import os
 
 # Resolve paths relative to project root (one level above this file)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUTPUTS_DIR  = os.path.join(PROJECT_ROOT, 'outputs')
+OUTPUTS_DIR  = os.path.join(PROJECT_ROOT, 'outputs', 'XGBoost-v2')
 
 
 def load_artifacts():
-    """Load all saved deployment artifacts from outputs/."""
+    """Load all saved deployment artifacts from outputs/XGBoost-v2/."""
     model = xgb.XGBClassifier()
     model.load_model(os.path.join(OUTPUTS_DIR, 'xgboost_fatigue_model.json'))
     scaler   = joblib.load(os.path.join(OUTPUTS_DIR, 'scaler.pkl'))
@@ -24,7 +24,7 @@ def load_artifacts():
 def evaluate_worker_state(worker_id, session_data, xgb_model, scaler, imputer, feature_cols):
     """
     Evaluates a worker's fatigue state using the trained XGBoost model
-    and prescribes HR interventions based on Causal AI rules.
+    and prescribes HR interventions based on V2 Causal AI rules (z-scored).
     """
     print(f"\n{'='*50}")
     print(f"👷 HR Alert System: Worker [{worker_id}] Evaluation")
@@ -45,40 +45,43 @@ def evaluate_worker_state(worker_id, session_data, xgb_model, scaler, imputer, f
         print("💡 Intervention: None required. Continue current tasks.")
         return
 
-    # 2. Causal AI Root-Cause Analysis
-    # PCMCI confirmed: Beta_TP9 → HeartRate (val=0.15), EDA(t-1) → EDA (val=0.74)
-    beta_eeg = session_data['muse_eeg_beta_TP9_mean'].values[0]
-    alpha_eeg = session_data['muse_eeg_alpha_TP9_mean'].values[0]
+    # 2. Causal AI Root-Cause Analysis (using v2 z-scored features)
+    beta     = session_data['muse_eeg_beta_TP9_mean'].values[0]
+    tb_ratio = session_data.get('theta_beta_ratio_TP9', pd.Series([np.nan])).values[0]
+    ab_ratio = session_data.get('alpha_beta_ratio_TP9', pd.Series([np.nan])).values[0]
     eda      = session_data['wrist_eda_eda_mean'].values[0]
     hr       = session_data['wrist_hr_hr_mean'].values[0]
 
-    # Dataset-derived approximate medians as naive baselines
-    baseline_beta  = 0.45
-    baseline_eda   = 0.90
-    baseline_hr    = 75.0
-
     print("\n🔍 Causal Root-Cause Analysis:")
 
-    if beta_eeg > baseline_beta * 1.5 and (alpha_eeg < 1e-6 or beta_eeg / alpha_eeg > 1.2):
-        print("   - Root Cause: Sustained high-frequency Beta brainwaves detected.")
-        print("   - Causal Pathway: [Beta_EEG] -> [Mental Fatigue]")
-        print("   - Diagnosis: Worker experiencing cognitive overload.")
+    if not np.isnan(tb_ratio) and tb_ratio > 1.0:
+        print("   - Root Cause: Elevated Theta/Beta Ratio (z-score: >+1.0).")
+        print("   - Causal Pathway: [Theta/Beta] -> [Drowsiness / Microsleeps]")
+        print("   - Diagnosis: Worker shows neurological signs of micro-sleeps.")
+        print("\n💊 HR Prescription:")
+        print("   - Action: Immediate Break.")
+        print("   - Suggestion: Remove from hazardous task immediately and enforce a 20-minute rest.")
+
+    elif (not np.isnan(beta) and beta > 1.0) or (not np.isnan(ab_ratio) and ab_ratio < -1.0):
+        print("   - Root Cause: Sustained high-frequency Beta brainwaves detected (z-score: >+1.0).")
+        print("   - Causal Pathway: [Beta_EEG] -> [Cognitive Overload]")
+        print("   - Diagnosis: Worker experiencing mental stress and cognitive forcing.")
         print("\n💊 HR Prescription:")
         print("   - Action: Task Rotation.")
         print("   - Suggestion: Move to a physically active but cognitively simple task for 30 minutes.")
 
-    elif eda > baseline_eda * 1.5 and hr > baseline_hr * 1.1:
-        print("   - Root Cause: EDA spike (stress/sweating) → elevated Heart Rate.")
-        print("   - Causal Pathway: [EDA] -> [Heart Rate] -> [Physical/Global Fatigue]")
+    elif eda > 1.0 and hr > 1.0:
+        print("   - Root Cause: EDA and Heart Rate concurrently elevated (z-scores: >+1.0).")
+        print("   - Causal Pathway: [EDA] & [Heart Rate] -> [Physical/Global Fatigue]")
         print("   - Diagnosis: Acute physiological stress or intense exertion.")
         print("\n💊 HR Prescription:")
         print("   - Action: Mandatory Physical Rest.")
         print("   - Suggestion: 15-minute hydration break in the cool-down area.")
 
     else:
-        print("   - Root Cause: Gradual compounding of previous fatigue states.")
-        print("   - Causal Pathway: [Fatigue (t-1)] -> [Fatigue (t)]  (val=0.695)")
-        print("   - Diagnosis: End-of-Shift compounded tiredness.")
+        print("   - Root Cause: Gradual compounding of physiological shifts (no single acute spike).")
+        print("   - Causal Pathway: Multiple interacting variables over time.")
+        print("   - Diagnosis: End-of-Shift compounded wear.")
         print("\n💊 HR Prescription:")
         print("   - Action: Monitor closely.")
         print("   - Suggestion: Do not assign to high-risk machinery for the rest of shift.")
@@ -86,30 +89,31 @@ def evaluate_worker_state(worker_id, session_data, xgb_model, scaler, imputer, f
 
 def main():
     model, scaler, imputer, feature_cols = load_artifacts()
-    print("✅ Loaded deployment artifacts from outputs/")
+    print("✅ Loaded deployment artifacts from outputs/XGBoost-v2/")
 
-    df = pd.read_csv(os.path.join(OUTPUTS_DIR, 'processed_features_windowed.csv'))
+    df = pd.read_csv(os.path.join(OUTPUTS_DIR, 'unseen_test_data.csv'))
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
 
     # ─────────────────────────────────────────────────────────────────
-    # DEMO 1: Cognitive Overload — very high Beta EEG, normal EDA/HR
+    # DEMO 1: Microsleep Risk (High Theta/Beta)
     # ─────────────────────────────────────────────────────────────────
-    dummy_cognitive = df[feature_cols].dropna().iloc[50:51].copy()
-    dummy_cognitive['muse_eeg_beta_TP9_mean']  = 1.8    # Massive Beta spike
-    dummy_cognitive['muse_eeg_alpha_TP9_mean'] = 0.4    # Suppressed Alpha
-    dummy_cognitive['wrist_eda_eda_mean']      = 0.85   # Normal EDA
-    dummy_cognitive['wrist_hr_hr_mean']        = 74.0   # Normal HR
+    dummy_drowsy = df[feature_cols].dropna().iloc[50:51].copy()
+    dummy_drowsy['theta_beta_ratio_TP9']      = 1.5     # High Drowsiness marker
+    dummy_drowsy['muse_eeg_beta_TP9_mean']    = -0.5    # Low alertness
+    dummy_drowsy['wrist_eda_eda_mean']        = 0.0     # Normal EDA
+    dummy_drowsy['wrist_hr_hr_mean']          = -0.2    # Normal HR
 
-    evaluate_worker_state("P12 (Machinery Inspector)", dummy_cognitive,
+    evaluate_worker_state("P12 (Machinery Inspector)", dummy_drowsy,
                           model, scaler, imputer, feature_cols)
 
     # ─────────────────────────────────────────────────────────────────
-    # DEMO 2: Acute Physical Stress — high EDA and HR, normal brainwaves
+    # DEMO 2: Acute Physical Stress (High EDA + HR)
     # ─────────────────────────────────────────────────────────────────
     dummy_physical = df[feature_cols].dropna().iloc[0:1].copy()
-    dummy_physical['muse_eeg_beta_TP9_mean']  = 0.35    # Normal Beta
-    dummy_physical['wrist_eda_eda_mean']      = 2.2     # High EDA
-    dummy_physical['wrist_hr_hr_mean']        = 112.0   # High HR
+    dummy_physical['theta_beta_ratio_TP9']    = 0.0     # Normal
+    dummy_physical['muse_eeg_beta_TP9_mean']  = 0.2     # Normal 
+    dummy_physical['wrist_eda_eda_mean']      = 1.8     # High EDA (z-score > 1)
+    dummy_physical['wrist_hr_hr_mean']        = 1.5     # High HR (z-score > 1)
 
     evaluate_worker_state("P04 (Heavy Lifter)", dummy_physical,
                           model, scaler, imputer, feature_cols)

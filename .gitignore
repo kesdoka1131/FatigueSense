@@ -30,3 +30,6 @@ Thumbs.db
 # Byte-compiled / optimized
 *.pyc
 *.pyo
+
+# Temporary Word files
+~$*.docx
