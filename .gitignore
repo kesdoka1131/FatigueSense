@@ -33,3 +33,10 @@ Thumbs.db
 
 # Temporary Word files
 ~$*.docx
+
+# Local project docs not intended for GitHub
+/Causal Graph
+/FORM_B.docx
+/FORM_B.md
+/FORM_B_corrected.docx
+/PROJECT_FLOWCHART.md
